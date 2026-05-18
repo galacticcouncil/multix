@@ -1,0 +1,11 @@
+**/node_modules
+**/build
+**/dist
+**/lib
+**/data
+**/.env
+**/.env.local
+**/cypress/videos
+**/cypress/screenshots
+.git
+squid/db.sqlite*

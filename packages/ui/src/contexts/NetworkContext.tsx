@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router';
 import { NetworkInfo, SupportedNetworks, networkList } from '../constants';
 
 const LOCALSTORAGE_SELECTED_NETWORK = 'multix.selectedNetwork';
-const DEFAULT_NETWORK = 'polkadot';
+const DEFAULT_NETWORK = 'hydration';
 
 type NetworkContextProps = {
     children: React.ReactNode | React.ReactNode[];

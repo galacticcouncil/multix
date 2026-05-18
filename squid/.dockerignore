@@ -1,0 +1,8 @@
+node_modules
+lib
+data
+db.sqlite*
+.env
+.git
+README.md
+squid-manifests

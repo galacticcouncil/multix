@@ -1,0 +1,7 @@
+node_modules
+build
+dist
+cypress/videos
+cypress/screenshots
+.git
+README.md
