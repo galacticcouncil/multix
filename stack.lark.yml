@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql
     shm_size: 1gb
     networks:
       - default
@@ -24,7 +24,7 @@ services:
     command:
       - sh
       - -c
-      - npx squid-typeorm-migration apply && npx sqd start-hydration
+      - npx squid-typeorm-migration apply && exec node -r dotenv/config lib/main dotenv_config_path=assets/envs/.env.hydration
     environment:
       DB_HOST: db
       DB_PORT: '5432'
@@ -108,4 +108,4 @@ networks:
     external: true
 
 volumes:
-  db_data:
+  pg_data:
