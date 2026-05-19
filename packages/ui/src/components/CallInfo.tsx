@@ -15,6 +15,8 @@ import { Transaction } from 'polkadot-api';
 import MultisigCompactDisplay from './MultisigCompactDisplay';
 import { IAssetsContext, useAssets } from '../contexts/AssetsContext';
 import { usePplApi } from '../contexts/PeopleChainApiContext';
+import { getRealAccount } from '../utils/getRealAccount';
+import { useMultiProxy } from '../contexts/MultiProxyContext';
 
 interface Props {
     aggregatedData: Omit<CallDataInfoFromChain, 'from' | 'timestamp'>;
@@ -22,7 +24,17 @@ interface Props {
     children?: ReactNode;
     className?: string;
     withLink?: boolean;
+    /**
+     * When true, peel outer `proxy.proxy` wraps whose `real` is the selected proxy
+     * (or any proxy in `implicitProxies`). Single addresses passed via the legacy
+     * boolean form are inferred from MultiProxyContext at the call site.
+     */
     withProxyFiltered?: boolean;
+    /**
+     * Addresses considered implicit when stripping outer proxy.proxy layers.
+     * Pass the full pure-proxy chain to fully unwrap nested setups.
+     */
+    implicitProxies?: string[];
     isPplChainTx: boolean;
     hideTooLargeCallData?: boolean;
 }
@@ -179,10 +191,10 @@ const eachFieldRendered = ({ value, chainInfo, id, extrinsicName }: EachFieldRen
     }
 
     // for Staking.bond
-    if (value.payee?.type === 'Account') {
+    if (value.payee?.type === 'Account' && value.payee?.value) {
         return (
-            <li key={`payee-${value.payee?.value}`}>
-                payee: <MultisigCompactDisplay address={value.payee?.value} />
+            <li key={`payee-${value.payee.value}`}>
+                payee: <MultisigCompactDisplay address={value.payee.value} />
             </li>
         );
     }
@@ -198,10 +210,10 @@ const eachFieldRendered = ({ value, chainInfo, id, extrinsicName }: EachFieldRen
 
     // if that's an Account with MultiAddress.Id
     const multiAddressKey = getMultiAddressKey(value);
-    if (multiAddressKey) {
+    if (multiAddressKey && value[multiAddressKey]?.value) {
         return (
             <DisplayAccount
-                address={value[multiAddressKey]?.value}
+                address={value[multiAddressKey].value}
                 label={multiAddressKey}
             />
         );
@@ -231,15 +243,18 @@ const preparedCall = ({
 
     if (isProxyCall(extrinsicName)) {
         const lowerLevelCall = decodedCall.value.value.call;
+        const realAddress = getRealAccount(decodedCall.value.value.real);
 
         return (
             <>
-                <StyleProxyDisplay>
-                    <DisplayAccount
-                        address={decodedCall.value.value.real.value}
-                        label={'Proxy'}
-                    />
-                </StyleProxyDisplay>
+                {realAddress && (
+                    <StyleProxyDisplay>
+                        <DisplayAccount
+                            address={realAddress}
+                            label={'Proxy'}
+                        />
+                    </StyleProxyDisplay>
+                )}
                 <BatchCallStyled data-cy={`batch-call-item`}>
                     {preparedCall({
                         decodedCall: lowerLevelCall as CreateTreeParams['decodedCall'],
@@ -352,22 +367,33 @@ const createTree = ({ name, decodedCall, chainInfo, ahAssets }: CreateTreeParams
     return preparedCall({ decodedCall, chainInfo, isFirstCall: true, ahAssets });
 };
 
-const filterProxyProxy = (agg: Props['aggregatedData']): Props['aggregatedData'] => {
-    const { decodedCall, name } = agg;
-    const isProxy = isProxyCall(name);
+// Peel outer `proxy.proxy(real, ..., call)` wrappers whose `real` is one of the
+// addresses the user is viewing through (their selected proxy + any pure proxy
+// in its delegation chain). This makes nested pure-proxy setups display the
+// "leaf" call instead of the redundant wrap layers.
+//
+// When `implicitProxies` is empty/undefined, no peeling happens — the existing
+// "strip exactly one" semantics from the boolean `withProxyFiltered` flag are
+// preserved via a synthetic single-address list at the call site.
+const filterProxyProxy = (
+    agg: Props['aggregatedData'],
+    implicitProxies?: string[],
+): Props['aggregatedData'] => {
+    if (!implicitProxies || implicitProxies.length === 0) return agg;
 
-    if (!isProxy || !decodedCall?.value.value.call) {
-        return agg;
+    let { decodedCall, name } = agg;
+
+    // peel as many outer proxy.proxy layers as we can while real is implicit
+    while (isProxyCall(name) && decodedCall?.value.value.call) {
+        const realAddress = getRealAccount(decodedCall.value.value.real);
+        if (!realAddress || !implicitProxies.includes(realAddress)) break;
+
+        const call = decodedCall.value.value.call;
+        decodedCall = call;
+        name = getExtrinsicName(call.type, call.value.type);
     }
 
-    const call = decodedCall.value.value.call;
-
-    const newName = getExtrinsicName(call.type, call.value.type);
-    return {
-        ...agg,
-        name: newName,
-        decodedCall: call,
-    };
+    return { ...agg, name, decodedCall };
 };
 
 const CallInfo = ({
@@ -377,11 +403,21 @@ const CallInfo = ({
     className,
     withLink = false,
     withProxyFiltered = true,
+    implicitProxies,
     isPplChainTx,
     hideTooLargeCallData = false,
 }: Props) => {
+    const { selectedMultiProxy } = useMultiProxy();
+    // Fall back to the selected multiproxy's full chain (preferred) or its
+    // single leaf proxy when the caller didn't provide an explicit list.
+    const effectiveImplicitProxies = useMemo(() => {
+        if (implicitProxies) return implicitProxies;
+        if (selectedMultiProxy?.proxyChain?.length) return selectedMultiProxy.proxyChain;
+        if (selectedMultiProxy?.proxy) return [selectedMultiProxy.proxy];
+        return [];
+    }, [implicitProxies, selectedMultiProxy]);
     const { decodedCall, name } = withProxyFiltered
-        ? filterProxyProxy(aggregatedData)
+        ? filterProxyProxy(aggregatedData, effectiveImplicitProxies)
         : aggregatedData;
     const { chainInfo: chainInfoNormal } = useApi();
     const { pplChainInfo } = usePplApi();
