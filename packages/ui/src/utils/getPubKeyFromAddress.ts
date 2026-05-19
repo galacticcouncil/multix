@@ -2,7 +2,9 @@ import { u8aToHex } from '@polkadot/util';
 import { decodeAddress } from '@polkadot/util-crypto';
 import { HexString } from 'polkadot-api';
 
-const decode = (address: string) => {
+const decode = (address: string | null | undefined) => {
+    if (!address) return null;
+
     // if it's an ethereum address pass just return it
     if (address.startsWith('0x') && address.length === 42) {
         return address.toLowerCase();
@@ -17,8 +19,8 @@ const decode = (address: string) => {
 };
 
 export function getPubKeyFromAddress(address: string[]): HexString[];
-export function getPubKeyFromAddress(address: string): HexString | null;
-export function getPubKeyFromAddress(address: string | string[]) {
+export function getPubKeyFromAddress(address: string | null | undefined): HexString | null;
+export function getPubKeyFromAddress(address: string | string[] | null | undefined) {
     if (Array.isArray(address)) {
         return address.map(decode).filter(Boolean) as HexString[];
     }

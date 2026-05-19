@@ -10,7 +10,7 @@ import { useGetEncodedAddress } from '../hooks/useGetEncodedAddress';
 import { getPubKeyFromAddress } from '../utils/getPubKeyFromAddress';
 
 interface Props {
-    address: string;
+    address?: string | null;
     className?: string;
     expanded?: boolean;
 }
@@ -38,6 +38,8 @@ const MultisigCompactDisplay = ({ className, address, expanded = false }: Props)
             badge: AccountBadge.MULTI as AccountBadge | undefined,
         };
     }, [data, error, getEncodedAddress, isFetching]);
+
+    if (!address) return null;
 
     return (
         <Box className={className}>

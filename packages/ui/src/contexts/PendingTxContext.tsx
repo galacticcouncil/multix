@@ -21,6 +21,8 @@ import { getEncodedCallFromDecodedTx } from '../utils/getEncodedCallFromDecodedT
 import { getExtrinsicDecoder } from '@polkadot-api/tx-utils';
 import { useHasIdentityFeature } from '../hooks/useHasIdentityFeature';
 import { usePplApi } from './PeopleChainApiContext';
+import { getRealAccount } from '../utils/getRealAccount';
+import { getExtrinsicName } from '../utils/getExtrinsicName';
 
 dayjs.extend(localizedFormat);
 
@@ -343,17 +345,34 @@ const getTxsByDate = async ({
 
             // if this multiproxy has a proxy
             // remove the proxy transaction that aren't for the selected proxy
+            // (or any pure proxy in its delegation chain, to support nested pure proxies)
             const relevantTxs = definedTxs.filter((agg) => {
-                if (
-                    !currentProxy ||
-                    !isProxyCall(agg.name) ||
-                    !agg?.decodedCall ||
-                    !agg.decodedCall.value.value.real.value
-                ) {
+                if (!currentProxy || !isProxyCall(agg.name) || !agg?.decodedCall) {
                     return true;
                 }
 
-                const isForCurrentProxy = agg.decodedCall.value.value.real.value === currentProxy;
+                const realAddress = getRealAccount(agg.decodedCall.value.value.real);
+                if (!realAddress) {
+                    return true;
+                }
+
+                // walk the proxy.proxy chain: a call may be
+                //   proxy(real=PA, call=proxy(real=PB, call=...))
+                // and PB might be the user's selected proxy even though PA is the outermost real.
+                const realChain: string[] = [realAddress];
+                let inner: any = agg.decodedCall.value.value.call;
+                while (
+                    inner &&
+                    isProxyCall(getExtrinsicName(inner.type, inner.value?.type)) &&
+                    inner.value?.value?.real
+                ) {
+                    const nextReal = getRealAccount(inner.value.value.real);
+                    if (!nextReal) break;
+                    realChain.push(nextReal);
+                    inner = inner.value.value.call;
+                }
+
+                const isForCurrentProxy = realChain.includes(currentProxy);
 
                 if (!isForCurrentProxy) {
                     console.warn('call filtered, current proxy:', currentProxy, 'call:', agg);

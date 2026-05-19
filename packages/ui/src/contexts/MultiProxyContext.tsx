@@ -26,7 +26,16 @@ export interface MultisigAggregated {
 }
 
 export interface MultiProxy {
+    /** The leaf proxy address — i.e. the account the user identifies as when this entry is selected. */
     proxy?: string;
+    /**
+     * Full chain of pure-proxy addresses ordered from **outermost wrap** (closest
+     * to the multisig) to **innermost / leaf**. For a flat M→PA setup this is just
+     * `[PA]`; for nested M→PA→PB it is `[PA, PB]`. Always ends with `proxy` when
+     * `proxy` is set. Useful for stripping all implicit `proxy.proxy` wraps when
+     * displaying calls.
+     */
+    proxyChain?: string[];
     multisigs: MultisigAggregated[];
 }
 
@@ -95,118 +104,114 @@ const MultiProxyContextProvider = ({ children }: MultisigContextProps) => {
 
     const multisigList = useMemo(() => {
         if (!data || data.accounts.length === 0) return [];
-        // map of the pure proxy addresses and the multisigs associated
-        const pureProxyMap = new Map<string, Omit<MultiProxy, 'proxy'>>();
-        // end result
-        const res: MultiProxy[] = [];
-        // iterate through the multisigs and pure proxies
-        data.accounts.forEach((account) => {
-            // if the account is a pure proxy
-            if (account.isPureProxy) {
-                // find the delegatee that are multisigs and put all the infos right away
-                account.delegatorFor.forEach(({ delegatee, type }) => {
-                    if (delegatee.isMultisig) {
-                        const pureAddress = getEncodedAddress(account.pubKey) || '';
-                        const multisigAddress = getEncodedAddress(delegatee.pubKey) || '';
 
-                        const previousMultisigsForProxy =
-                            pureProxyMap.get(pureAddress)?.multisigs || [];
+        // Lookup any account record by its pubKey so we can walk pure-to-pure
+        // delegation links (PA→PB) past the immediate edge available on
+        // `delegateeFor.delegator` (which only carries pubKey/isPureProxy).
+        // Pure proxies further up the chain need to be in the GraphQL response
+        // — which today means the user has watched them — otherwise we can't
+        // see beyond what each account's edges advertise about itself.
+        const accountByPubKey = new Map<string, (typeof data.accounts)[number]>();
+        data.accounts.forEach((account) => accountByPubKey.set(account.pubKey, account));
 
-                        const isAlreadyInMultisigList = !!previousMultisigsForProxy.find(
-                            ({ address }) => address === multisigAddress,
-                        );
+        // Walk "this-account can-act-for" links upward through pure proxies and
+        // return every chain reachable from `fromPubKey`. Each chain is ordered
+        // outermost-wrap → leaf (i.e. closest-to-multisig first). The proxy
+        // type used for the **first hop** is returned alongside each chain so
+        // we can label the multisig→leaf relationship correctly.
+        const buildChainsFrom = (
+            fromPubKey: string,
+            visited: Set<string>,
+        ): Array<{ chain: string[]; firstHopType: ProxyType }> => {
+            if (visited.has(fromPubKey)) return [];
+            const account = accountByPubKey.get(fromPubKey);
+            if (!account) return [];
+            const nextVisited = new Set(visited);
+            nextVisited.add(fromPubKey);
 
-                        // do not add a second time a multisig
-                        if (isAlreadyInMultisigList) return;
+            const chains: Array<{ chain: string[]; firstHopType: ProxyType }> = [];
+            account.delegateeFor.forEach(({ delegator, type }) => {
+                if (!delegator?.isPureProxy) return;
+                const delegatorAddress = getEncodedAddress(delegator.pubKey) || '';
+                if (!delegatorAddress) return;
 
-                        const newMultisigForProxy = {
-                            address: multisigAddress,
-                            signatories: getSignatoriesAddressesFromAccount(delegatee.signatories),
-                            threshold: delegatee?.threshold || undefined,
-                            type,
-                        };
-                        pureProxyMap.set(pureAddress, {
-                            multisigs: [...previousMultisigsForProxy, newMultisigForProxy],
-                        });
-                    }
-                });
+                // direct hop: this account can act as `delegator`
+                chains.push({ chain: [delegatorAddress], firstHopType: type });
 
-                return;
-            }
-
-            // from this point, we should only be dealing with multisigs
-            // looking for multisigs being delegatee for pure proxies
-            const pureProxyAddresses: {
-                pureAddress: string;
-                type: ProxyType;
-            }[] = [];
-
-            // one multisig could be a delegator for multiple pure proxies
-            account.isMultisig &&
-                account.delegateeFor.forEach(({ delegator, type }) => {
-                    const delegatorAddress = getEncodedAddress(delegator.pubKey) || '';
-                    const accountAddress = getEncodedAddress(account.pubKey) || '';
-                    // if a pure was already added, e.g because it is watched
-                    // we shouldn't associate this multisig to it twice
-                    const currentMultisigsForProxy = pureProxyMap
-                        .get(delegatorAddress)
-                        ?.multisigs.map(({ address }) => address);
-
-                    // finding all the accounts that are pure proxy and that don't include this multisig already
-                    if (
-                        delegator?.isPureProxy &&
-                        !currentMultisigsForProxy?.includes(accountAddress)
-                    ) {
-                        pureProxyAddresses.push({
-                            pureAddress: delegatorAddress,
-                            type: type,
-                        });
-                    }
-                });
-
-            // if this account is a multisig and is the delegatee for at least a pureProxy
-            if (account.isMultisig && pureProxyAddresses?.length > 0) {
-                pureProxyAddresses.forEach(({ pureAddress, type }) => {
-                    const previousMultisigsForProxy =
-                        pureProxyMap.get(pureAddress)?.multisigs || [];
-                    const newMultisigForProxy = {
-                        address: getEncodedAddress(account.pubKey) || '',
-                        signatories: getSignatoriesAddressesFromAccount(account.signatories),
-                        threshold: account?.threshold || undefined,
-                        type,
-                    };
-
-                    // add this pureProxy to the Map
-                    pureProxyMap.set(pureAddress, {
-                        multisigs: [...previousMultisigsForProxy, newMultisigForProxy],
+                // recurse: if we have the delegator's full record, extend further
+                const subChains = buildChainsFrom(delegator.pubKey, nextVisited);
+                for (const sub of subChains) {
+                    chains.push({
+                        chain: [delegatorAddress, ...sub.chain],
+                        // the first hop from THIS account is still `type`,
+                        // regardless of how the chain continues from delegator
+                        firstHopType: type,
                     });
-                });
-            } else if (account.isMultisig && pureProxyAddresses.length === 0) {
-                // if this multisig doesn't have a proxy
-                res.push({
+                }
+            });
+            return chains;
+        };
+
+        // Keyed by chain.join('/') so two different chains landing on the same
+        // leaf (rare but possible) get distinct entries.
+        const chainMap = new Map<
+            string,
+            { proxyChain: string[]; multisigs: MultisigAggregated[] }
+        >();
+        const standaloneMultisigs: MultiProxy[] = [];
+
+        data.accounts.forEach((account) => {
+            if (!account.isMultisig) return; // pure proxies are visited transitively
+
+            const multisigAddress = getEncodedAddress(account.pubKey) || '';
+            const multisigSignatories = getSignatoriesAddressesFromAccount(account.signatories);
+
+            const chains = buildChainsFrom(account.pubKey, new Set());
+
+            if (chains.length === 0) {
+                standaloneMultisigs.push({
                     proxy: undefined,
                     multisigs: [
                         {
-                            address: getEncodedAddress(account.pubKey) || '',
-                            signatories: getSignatoriesAddressesFromAccount(account.signatories),
+                            address: multisigAddress,
+                            signatories: multisigSignatories,
                             threshold: account.threshold,
                         },
                     ],
                 } as MultiProxy);
-            } else {
-                console.error('Unexpected account, it should be a multisig', account);
+                return;
             }
+
+            chains.forEach(({ chain, firstHopType }) => {
+                const key = chain.join('/');
+                const existing = chainMap.get(key);
+                const multisigEntry: MultisigAggregated = {
+                    address: multisigAddress,
+                    signatories: multisigSignatories,
+                    threshold: account.threshold ?? undefined,
+                    type: firstHopType,
+                };
+                if (existing) {
+                    if (existing.multisigs.some((m) => m.address === multisigAddress)) return;
+                    existing.multisigs.push(multisigEntry);
+                } else {
+                    chainMap.set(key, {
+                        proxyChain: chain,
+                        multisigs: [multisigEntry],
+                    });
+                }
+            });
         });
-        // flatten out proxyMap
-        const proxyArray = Array.from(pureProxyMap.entries()).map(
-            ([proxy, agg]) =>
-                ({
-                    proxy,
-                    multisigs: agg.multisigs,
-                }) as MultiProxy,
+
+        const proxiedEntries: MultiProxy[] = Array.from(chainMap.values()).map(
+            ({ proxyChain, multisigs }) => ({
+                proxy: proxyChain[proxyChain.length - 1],
+                proxyChain,
+                multisigs,
+            }),
         );
-        res.push(...proxyArray);
-        return res;
+
+        return [...standaloneMultisigs, ...proxiedEntries];
     }, [getEncodedAddress, getSignatoriesAddressesFromAccount, data]);
 
     const multiProxyList = useMemo(() => {
